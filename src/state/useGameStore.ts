@@ -13,11 +13,18 @@ import {
 } from '../domain/gameState'
 import type { Team } from '../domain/team'
 import { pickAiDefensePlay, pickAiFourthDownDecision, pickAiOffensePlay } from '../engine/ai/playCaller'
+import { buildOffenseActors } from '../engine/physics/formations'
 import { simulatePlay, type PlayFrame } from '../engine/physics/playDirector'
 import type { DefensePlay, OffensePlay } from '../engine/playbook/types'
 import { resolvePlay } from '../engine/outcome/resolvePlay'
 import type { PlayOutcome } from '../engine/outcome/types'
 import { mulberry32, randInt, type Rng } from '../engine/rng'
+import {
+  loadCustomDefensePlays,
+  loadCustomOffensePlays,
+  saveCustomDefensePlays,
+  saveCustomOffensePlays,
+} from './customPlaysStorage'
 
 export type GamePhase = 'pre_snap' | 'animating' | 'result' | 'final'
 
@@ -31,12 +38,16 @@ interface GameStoreState {
   lastOutcome: PlayOutcome | null
   lastOffensePlay: OffensePlay | null
   lastDefensePlay: DefensePlay | null
+  customOffensePlays: OffensePlay[]
+  customDefensePlays: DefensePlay[]
   callUserPlay: (play: OffensePlay | DefensePlay) => void
   callPunt: () => void
   callFieldGoal: () => void
   finishAnimation: () => void
   continueToNextPlay: () => void
   resetGame: () => void
+  saveCustomOffensePlay: (play: OffensePlay) => void
+  saveCustomDefensePlay: (play: DefensePlay) => void
 }
 
 let rng: Rng = mulberry32(Date.now() & 0xffffffff)
@@ -44,9 +55,11 @@ let rng: Rng = mulberry32(Date.now() & 0xffffffff)
 function freshTeams(): { home: Team; away: Team } {
   const shuffled = [...TEAM_NAMES].sort(() => rng() - 0.5)
   const [homeInfo, awayInfo] = shuffled
+  // The user always starts on 'home' with a deliberately weak roster — winning has
+  // to come from scheme (custom-drawn plays), not from having better players.
   return {
-    home: generateTeam(rng, 'home', homeInfo.name, homeInfo.abbreviation, randInt(rng, 45, 70)),
-    away: generateTeam(rng, 'away', awayInfo.name, awayInfo.abbreviation, randInt(rng, 45, 70)),
+    home: generateTeam(rng, 'home', homeInfo.name, homeInfo.abbreviation, randInt(rng, 25, 42)),
+    away: generateTeam(rng, 'away', awayInfo.name, awayInfo.abbreviation, randInt(rng, 55, 78)),
   }
 }
 
@@ -81,8 +94,17 @@ function autoResolveAiSpecialTeams(state: GameState, userSide: Side): GameState 
   return applyFieldGoalAttempt(state, made, rng)
 }
 
+/** Resolves a custom pass play's drawn target slot (e.g. 'WR:1') to the actual roster player id. */
+function resolvePreferredTargetId(offenseTeam: Team, offensePlay: OffensePlay): string | undefined {
+  if (offensePlay.custom?.kind !== 'pass' || !offensePlay.custom.targetSlot) return undefined
+  const actor = buildOffenseActors(offenseTeam).find((a) => a.slotKey === offensePlay.custom!.targetSlot)
+  return actor?.id
+}
+
 export const useGameStore = create<GameStoreState>((set, get) => ({
   ...initialSnapshot(),
+  customOffensePlays: loadCustomOffensePlays(),
+  customDefensePlays: loadCustomDefensePlays(),
 
   callUserPlay: (play) => {
     const { gameState, userSide, homeTeam, awayTeam } = get()
@@ -97,7 +119,8 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     const offenseTeam = teamFor(gameState.possession)
     const defenseTeam = teamFor(otherOf(gameState.possession))
 
-    const outcome = resolvePlay(rng, offenseTeam, defenseTeam, offensePlay, defensePlay, situation)
+    const preferredTargetId = resolvePreferredTargetId(offenseTeam, offensePlay)
+    const outcome = resolvePlay(rng, offenseTeam, defenseTeam, offensePlay, defensePlay, situation, { preferredTargetId })
     const frames = simulatePlay({ outcome, offensePlay, defensePlay, offense: offenseTeam, defense: defenseTeam, rng })
 
     set({ phase: 'animating', frames, lastOutcome: outcome, lastOffensePlay: offensePlay, lastDefensePlay: defensePlay })
@@ -129,5 +152,17 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   resetGame: () => {
     rng = mulberry32(Date.now() & 0xffffffff)
     set(initialSnapshot())
+  },
+
+  saveCustomOffensePlay: (play) => {
+    const updated = [...get().customOffensePlays, play]
+    saveCustomOffensePlays(updated)
+    set({ customOffensePlays: updated })
+  },
+
+  saveCustomDefensePlay: (play) => {
+    const updated = [...get().customDefensePlays, play]
+    saveCustomDefensePlays(updated)
+    set({ customDefensePlays: updated })
   },
 }))

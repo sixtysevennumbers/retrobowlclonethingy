@@ -81,4 +81,19 @@ describe('resolvePlay', () => {
     }
     expect(sacksBlitz).toBeGreaterThan(sacksBase)
   })
+
+  it('honors preferredTargetId instead of picking a random receiver, whenever the play is not a sack/INT', () => {
+    const rng = mulberry32(11)
+    const offense = generateTeam(rng, 'o', 'Offense', 'OFF', 60)
+    const defense = generateTeam(rng, 'd', 'Defense', 'DEF', 40)
+    const preferredTargetId = offense.roster.find((p) => p.position === 'TE')!.id
+    let sawPreferredTarget = false
+    for (let i = 0; i < 100; i++) {
+      const outcome = resolvePlay(rng, offense, defense, play('slants'), defPlay('base'), situation, { preferredTargetId })
+      if (outcome.type === 'sack') continue
+      expect(outcome.targetReceiverId).toBe(preferredTargetId)
+      sawPreferredTarget = true
+    }
+    expect(sawPreferredTarget).toBe(true)
+  })
 })

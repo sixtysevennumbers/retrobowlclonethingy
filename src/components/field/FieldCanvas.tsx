@@ -1,13 +1,8 @@
 import { useEffect, useRef } from 'react'
 import type { Team } from '../../domain/team'
 import type { PlayFrame } from '../../engine/physics/playDirector'
-import { FIELD_WIDTH_YD } from '../../engine/physics/world'
+import { CANVAS_HEIGHT, CANVAS_WIDTH, LOCAL_Y_MAX, LOCAL_Y_MIN, toCanvas } from './fieldProjection'
 
-const PX_PER_YARD = 9
-const LOCAL_Y_MIN = -8
-const LOCAL_Y_MAX = 48
-const CANVAS_WIDTH = Math.round(FIELD_WIDTH_YD * PX_PER_YARD)
-const CANVAS_HEIGHT = Math.round((LOCAL_Y_MAX - LOCAL_Y_MIN) * PX_PER_YARD)
 const FRAME_DT = 1 / 30
 
 interface FieldCanvasProps {
@@ -16,12 +11,6 @@ interface FieldCanvasProps {
   defenseTeam: Team
   playing: boolean
   onComplete: () => void
-}
-
-function toCanvas(x: number, y: number): [number, number] {
-  const cx = (x + FIELD_WIDTH_YD / 2) * PX_PER_YARD
-  const cy = CANVAS_HEIGHT - (y - LOCAL_Y_MIN) * PX_PER_YARD
-  return [cx, cy]
 }
 
 export function FieldCanvas({ frames, offenseTeam, defenseTeam, playing, onComplete }: FieldCanvasProps) {

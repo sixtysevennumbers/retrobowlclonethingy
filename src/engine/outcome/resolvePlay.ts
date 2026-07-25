@@ -22,6 +22,11 @@ function applyGoalLine(type: 'run' | 'pass', yards: number, opponentGoalDistance
   return { type, yards }
 }
 
+export interface ResolvePlayOptions {
+  /** Force the pass target to a specific player (e.g. the receiver the user drew as the target) instead of a random pick. */
+  preferredTargetId?: string
+}
+
 export function resolvePlay(
   rng: Rng,
   offense: Team,
@@ -29,6 +34,7 @@ export function resolvePlay(
   offensePlay: OffensePlay,
   defensePlay: DefensePlay,
   situation: PlaySituation,
+  options?: ResolvePlayOptions,
 ): PlayOutcome {
   const isRun = offensePlay.type === 'run_inside' || offensePlay.type === 'run_outside'
 
@@ -110,7 +116,8 @@ export function resolvePlay(
   }
 
   const difficulty = offensePlay.type === 'pass_deep' ? 0.18 : offensePlay.type === 'pass_medium' ? 0.06 : 0.0
-  const target = pick(rng, receivers)
+  const preferredTarget = options?.preferredTargetId ? receivers.find((p) => p.id === options.preferredTargetId) : undefined
+  const target = preferredTarget ?? pick(rng, receivers)
   const defender = pick(rng, db.length ? db : lb)
 
   const interceptionChance = clamp(0.018 + (0.5 - advantage) * 0.05 + (offensePlay.type === 'pass_deep' ? 0.02 : 0), 0.008, 0.11)

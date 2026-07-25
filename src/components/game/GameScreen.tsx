@@ -1,6 +1,9 @@
+import { useState } from 'react'
 import { describeOutcome, opponentGoalDistance } from '../../domain/gameState'
+import type { DefensePlay, OffensePlay } from '../../engine/playbook/types'
 import { DefensePlaySelector } from '../playcalling/DefensePlaySelector'
 import { OffensePlaySelector } from '../playcalling/OffensePlaySelector'
+import { PlayEditor } from '../editor/PlayEditor'
 import { Scoreboard } from '../hud/Scoreboard'
 import { DriveTracker } from '../hud/DriveTracker'
 import { FieldCanvas } from '../field/FieldCanvas'
@@ -14,12 +17,18 @@ export function GameScreen() {
   const phase = useGameStore((s) => s.phase)
   const frames = useGameStore((s) => s.frames)
   const lastOutcome = useGameStore((s) => s.lastOutcome)
+  const customOffensePlays = useGameStore((s) => s.customOffensePlays)
+  const customDefensePlays = useGameStore((s) => s.customDefensePlays)
   const callUserPlay = useGameStore((s) => s.callUserPlay)
   const callPunt = useGameStore((s) => s.callPunt)
   const callFieldGoal = useGameStore((s) => s.callFieldGoal)
   const finishAnimation = useGameStore((s) => s.finishAnimation)
   const continueToNextPlay = useGameStore((s) => s.continueToNextPlay)
   const resetGame = useGameStore((s) => s.resetGame)
+  const saveCustomOffensePlay = useGameStore((s) => s.saveCustomOffensePlay)
+  const saveCustomDefensePlay = useGameStore((s) => s.saveCustomDefensePlay)
+
+  const [editorOpen, setEditorOpen] = useState(false)
 
   const userIsOnOffense = gameState.possession === userSide
   const offenseTeam = gameState.possession === 'home' ? homeTeam : awayTeam
@@ -49,7 +58,19 @@ export function GameScreen() {
       </div>
       <DriveTracker gameState={gameState} homeTeam={homeTeam} awayTeam={awayTeam} />
 
-      {phase === 'pre_snap' && userIsOnOffense && gameState.down === 4 && (
+      {phase === 'pre_snap' && editorOpen && (
+        <PlayEditor
+          mode={userIsOnOffense ? 'offense' : 'defense'}
+          onCancel={() => setEditorOpen(false)}
+          onSave={(play) => {
+            if (userIsOnOffense) saveCustomOffensePlay(play as OffensePlay)
+            else saveCustomDefensePlay(play as DefensePlay)
+            setEditorOpen(false)
+          }}
+        />
+      )}
+
+      {phase === 'pre_snap' && !editorOpen && userIsOnOffense && gameState.down === 4 && (
         <div className="flex gap-2">
           <button onClick={callPunt} className="flex-1 rounded-md border border-white/15 bg-slate-800/80 px-3 py-2 font-semibold hover:bg-slate-700">
             Punt
@@ -64,7 +85,12 @@ export function GameScreen() {
       )}
 
       {phase === 'pre_snap' &&
-        (userIsOnOffense ? <OffensePlaySelector onSelect={callUserPlay} /> : <DefensePlaySelector onSelect={callUserPlay} />)}
+        !editorOpen &&
+        (userIsOnOffense ? (
+          <OffensePlaySelector onSelect={callUserPlay} customPlays={customOffensePlays} onDrawPlay={() => setEditorOpen(true)} />
+        ) : (
+          <DefensePlaySelector onSelect={callUserPlay} customPlays={customDefensePlays} onDrawPlay={() => setEditorOpen(true)} />
+        ))}
 
       {phase === 'animating' && <div className="text-center text-sm text-slate-400">Play in motion…</div>}
 

@@ -4,9 +4,24 @@ import type { DefensePlay, OffensePlay } from '../playbook/types'
 import type { PlayOutcome } from '../outcome/types'
 import type { Rng } from '../rng'
 import { pick, randInt } from '../rng'
-import { Actor, buildDefenseActors, buildOffenseActors, pairBlockers } from './formations'
-import { arrive, pursue as pursueSteer, steerToward, type Vec2 } from './steering'
-import { createPhysicsWorld, createPlayerBody, FIELD_WIDTH_YD, maxAccelFor, maxSpeedFor } from './world'
+import { Actor, buildDefenseActors, buildOffenseActors } from './formations'
+import { arrive, steerToward, type Vec2 } from './steering'
+import { createPhysicsWorld, createPlayerBody, FIELD_WIDTH_YD } from './world'
+import { setupCustomDefensePlay, setupCustomOffensePlay } from './customPlayDirector'
+import {
+  actorMaxAccel,
+  actorMaxSpeed,
+  applyBlockingTargets,
+  applyDefaultSecondaryTargets,
+  applyDefaultSkillPlayerTargets,
+  applyPassRushTargets,
+  applyRunPursuitTargets,
+  frontSevenOf,
+  olineOf,
+  routeDepthFallback,
+  secondaryOf,
+  type TargetFn,
+} from './playHelpers'
 
 export interface PlayFrame {
   tSec: number
@@ -16,30 +31,15 @@ export interface PlayFrame {
   event?: string
 }
 
-type TargetFn = (tSec: number, positions: Map<string, Vec2>, velocities: Map<string, Vec2>) => Vec2
-
-const DT = 1 / 30
+export const DT = 1 / 30
 const HALF_WIDTH = FIELD_WIDTH_YD / 2 - 0.6
 
 function clampToField(v: Vec2): Vec2 {
   return { x: Math.max(-HALF_WIDTH, Math.min(HALF_WIDTH, v.x)), y: v.y }
 }
 
-function actorMaxSpeed(actor: Actor): number {
-  return maxSpeedFor(actor.player.ratings.speed)
-}
-function actorMaxAccel(actor: Actor): number {
-  return maxAccelFor(actor.player.ratings.acceleration)
-}
-
 /** Builds per-actor steering-target functions for a running play. */
-function setupRunPlay(
-  rng: Rng,
-  offensePlay: OffensePlay,
-  offense: Actor[],
-  defense: Actor[],
-  outcome: PlayOutcome,
-): Map<string, TargetFn> {
+function setupRunPlay(rng: Rng, offensePlay: OffensePlay, offense: Actor[], defense: Actor[], outcome: PlayOutcome): Map<string, TargetFn> {
   const targets = new Map<string, TargetFn>()
   const rb = offense.find((a) => a.position === 'RB')
   const qb = offense.find((a) => a.position === 'QB')
@@ -53,41 +53,18 @@ function setupRunPlay(
   if (rb) targets.set(rb.id, () => finalTarget)
   if (qb) targets.set(qb.id, () => ({ x: qb.start.x, y: qb.start.y - 0.5 }))
 
-  const frontSeven = defense.filter((a) => a.position === 'DE' || a.position === 'DT' || a.position === 'LB')
-  const blockablePool = offensePlay.type === 'run_inside'
-    ? offense.filter((a) => a.position === 'LT' || a.position === 'LG' || a.position === 'C' || a.position === 'RG' || a.position === 'RT' || a.position === 'TE')
-    : offense.filter((a) => a.position === 'LT' || a.position === 'LG' || a.position === 'C' || a.position === 'RG' || a.position === 'RT')
-  const pairs = pairBlockers(blockablePool, frontSeven)
+  const frontSeven = frontSevenOf(defense)
+  const blockablePool = offensePlay.type === 'run_inside' ? [...olineOf(offense), ...offense.filter((a) => a.position === 'TE')] : olineOf(offense)
+  applyBlockingTargets(targets, blockablePool, frontSeven)
+  applyDefaultSkillPlayerTargets(targets, offense, 8)
 
-  for (const blocker of blockablePool) {
-    const defenderId = pairs.get(blocker.id)
-    if (defenderId) {
-      targets.set(blocker.id, (_t, positions) => positions.get(defenderId) ?? blocker.start)
-    }
-  }
-  for (const wr of offense.filter((a) => a.position === 'WR')) {
-    targets.set(wr.id, () => ({ x: wr.start.x, y: wr.start.y + 8 }))
-  }
-
-  for (const defender of defense) {
-    if (rb) {
-      targets.set(defender.id, (_t, positions, velocities) =>
-        pursueSteer(defender.start, positions.get(rb.id) ?? finalTarget, velocities.get(rb.id) ?? { x: 0, y: 0 }, actorMaxSpeed(defender)),
-      )
-    }
-  }
+  if (rb) applyRunPursuitTargets(targets, defense, rb, finalTarget)
 
   return targets
 }
 
 /** Builds per-actor steering-target functions for a passing play (complete, incomplete, interception, sack). */
-function setupPassPlay(
-  rng: Rng,
-  offensePlay: OffensePlay,
-  offense: Actor[],
-  defense: Actor[],
-  outcome: PlayOutcome,
-): Map<string, TargetFn> {
+function setupPassPlay(rng: Rng, offensePlay: OffensePlay, offense: Actor[], defense: Actor[], outcome: PlayOutcome): Map<string, TargetFn> {
   const targets = new Map<string, TargetFn>()
   const qb = offense.find((a) => a.position === 'QB')!
   const dropback: Vec2 = { x: qb.start.x, y: qb.start.y - (offensePlay.type === 'pass_deep' ? 3.5 : 2) }
@@ -116,39 +93,24 @@ function setupPassPlay(
     }
   }
 
-  const rb = offense.find((a) => a.position === 'RB')
-  if (rb) targets.set(rb.id, () => ({ x: rb.start.x, y: rb.start.y + 3 }))
+  applyDefaultSkillPlayerTargets(targets, offense)
 
-  const frontSeven = defense.filter((a) => a.position === 'DE' || a.position === 'DT' || a.position === 'LB')
-  const oline = offense.filter((a) => a.position === 'LT' || a.position === 'LG' || a.position === 'C' || a.position === 'RG' || a.position === 'RT')
-  const pairs = pairBlockers(oline, frontSeven)
-  for (const blocker of oline) {
-    const defenderId = pairs.get(blocker.id)
-    if (defenderId) targets.set(blocker.id, (_t, positions) => positions.get(defenderId) ?? blocker.start)
-  }
-  for (const rusher of frontSeven) {
-    targets.set(rusher.id, (_t, positions) => positions.get(qb.id) ?? dropback)
-  }
+  const frontSeven = frontSevenOf(defense)
+  applyBlockingTargets(targets, olineOf(offense), frontSeven)
+  applyPassRushTargets(targets, frontSeven, qb, dropback)
 
-  const secondary = defense.filter((a) => a.position === 'CB' || a.position === 'S')
+  const secondary = secondaryOf(defense)
   const coverDefender = defense.find((a) => a.id === outcome.primaryDefenderId) ?? pick(rng, secondary)
-  for (const db of secondary) {
-    if (db.id === coverDefender.id && target) {
-      targets.set(db.id, (tSec, positions) => {
-        if (tSec < endAt) return positions.get(target.id) ?? routeDepthFallback(target)
-        // Post-interception: peel back toward the defense's own end.
-        return { x: db.start.x, y: (positions.get(db.id)?.y ?? db.start.y) - 2 }
-      })
-    } else {
-      targets.set(db.id, () => ({ x: db.start.x, y: db.start.y + 2 }))
-    }
+  applyDefaultSecondaryTargets(targets, secondary, target, coverDefender?.id)
+  // Post-interception peel-back for the intercepting defender, overriding the generic cover target above.
+  if (outcome.type === 'interception' && coverDefender) {
+    targets.set(coverDefender.id, (tSec, positions) => {
+      if (tSec < endAt) return (target && positions.get(target.id)) ?? routeDepthFallback(coverDefender)
+      return { x: coverDefender.start.x, y: (positions.get(coverDefender.id)?.y ?? coverDefender.start.y) - 2 }
+    })
   }
 
   return targets
-}
-
-function routeDepthFallback(actor: Actor): Vec2 {
-  return { x: actor.start.x, y: actor.start.y + 8 }
 }
 
 function setupSackPlay(offense: Actor[], defense: Actor[], outcome: PlayOutcome): Map<string, TargetFn> {
@@ -157,23 +119,12 @@ function setupSackPlay(offense: Actor[], defense: Actor[], outcome: PlayOutcome)
   const sackSpot: Vec2 = { x: qb.start.x, y: qb.start.y + outcome.yards }
   targets.set(qb.id, () => sackSpot)
 
-  const frontSeven = defense.filter((a) => a.position === 'DE' || a.position === 'DT' || a.position === 'LB')
-  const oline = offense.filter((a) => a.position === 'LT' || a.position === 'LG' || a.position === 'C' || a.position === 'RG' || a.position === 'RT')
-  const pairs = pairBlockers(oline, frontSeven)
-  for (const blocker of oline) {
-    const defenderId = pairs.get(blocker.id)
-    if (defenderId) targets.set(blocker.id, (_t, positions) => positions.get(defenderId) ?? blocker.start)
-  }
-  for (const rusher of frontSeven) {
-    targets.set(rusher.id, (_t, positions) => positions.get(qb.id) ?? sackSpot)
-  }
-  for (const receiver of offense.filter((a) => a.position === 'WR' || a.position === 'TE')) {
-    targets.set(receiver.id, () => ({ x: receiver.start.x * 0.75, y: receiver.start.y + 6 }))
-  }
-  const rb = offense.find((a) => a.position === 'RB')
-  if (rb) targets.set(rb.id, () => ({ x: rb.start.x, y: rb.start.y + 1 }))
-  for (const db of defense.filter((a) => a.position === 'CB' || a.position === 'S')) {
-    targets.set(db.id, () => ({ x: db.start.x, y: db.start.y + 1 }))
+  const frontSeven = frontSevenOf(defense)
+  applyBlockingTargets(targets, olineOf(offense), frontSeven)
+  applyPassRushTargets(targets, frontSeven, qb, sackSpot)
+  applyDefaultSkillPlayerTargets(targets, offense)
+  for (const dbActor of secondaryOf(defense)) {
+    targets.set(dbActor.id, () => ({ x: dbActor.start.x, y: dbActor.start.y + 1 }))
   }
   return targets
 }
@@ -218,11 +169,17 @@ export function simulatePlay({ outcome, offensePlay, defensePlay, offense, defen
   }
 
   const isRun = offensePlay.type === 'run_inside' || offensePlay.type === 'run_outside'
-  const targets = outcome.type === 'sack'
-    ? setupSackPlay(offenseActors, defenseActors, outcome)
-    : isRun
-      ? setupRunPlay(rng, offensePlay, offenseActors, defenseActors, outcome)
-      : setupPassPlay(rng, offensePlay, offenseActors, defenseActors, outcome)
+  const targets = offensePlay.custom
+    ? setupCustomOffensePlay(offensePlay, offenseActors, defenseActors, outcome)
+    : outcome.type === 'sack'
+      ? setupSackPlay(offenseActors, defenseActors, outcome)
+      : isRun
+        ? setupRunPlay(rng, offensePlay, offenseActors, defenseActors, outcome)
+        : setupPassPlay(rng, offensePlay, offenseActors, defenseActors, outcome)
+
+  if (defensePlay.custom) {
+    setupCustomDefensePlay(defensePlay, offenseActors, defenseActors, outcome, targets)
+  }
 
   const lastEvent = outcome.breakdownEvents[outcome.breakdownEvents.length - 1]
   const durationSec = Math.max(1.5, lastEvent?.atSec ?? 3)
