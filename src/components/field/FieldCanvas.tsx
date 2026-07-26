@@ -4,6 +4,9 @@ import type { PlayFrame } from '../../engine/physics/playDirector'
 import { CANVAS_HEIGHT, CANVAS_WIDTH, LOCAL_Y_MAX, LOCAL_Y_MIN, toCanvas } from './fieldProjection'
 
 const FRAME_DT = 1 / 30
+/** Scrubs through the simulated frames faster than real time so plays resolve snappily
+ *  without touching the underlying physics/outcome timing the game balance depends on. */
+const PLAYBACK_SPEED = 1.8
 
 interface FieldCanvasProps {
   frames: PlayFrame[]
@@ -62,25 +65,27 @@ export function FieldCanvas({ frames, offenseTeam, defenseTeam, playing, onCompl
         if (!info) continue
         const [cx, cy] = toCanvas(pos.x, pos.y)
         const isCarrier = frame.ballHolderId === id
+        const radius = isCarrier ? 8.5 : 7.5
         ctx.beginPath()
-        ctx.arc(cx, cy, isCarrier ? 6.5 : 5.5, 0, Math.PI * 2)
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2)
         ctx.fillStyle = info.side === 'offense' ? '#3b82f6' : '#ef4444'
         ctx.fill()
-        if (isCarrier) {
-          ctx.strokeStyle = '#facc15'
-          ctx.lineWidth = 2
-          ctx.stroke()
-        }
+        ctx.strokeStyle = isCarrier ? '#facc15' : 'rgba(0,0,0,0.55)'
+        ctx.lineWidth = isCarrier ? 2.5 : 1.5
+        ctx.stroke()
         ctx.fillStyle = 'white'
-        ctx.font = '7px sans-serif'
+        ctx.font = 'bold 9px sans-serif'
         ctx.textAlign = 'center'
-        ctx.fillText(String(info.number), cx, cy + 2.5)
+        ctx.fillText(String(info.number), cx, cy + 3)
       }
       const [bx, by] = toCanvas(frame.ball.x, frame.ball.y)
       ctx.beginPath()
-      ctx.ellipse(bx, by, 3, 2, 0, 0, Math.PI * 2)
+      ctx.ellipse(bx, by, 4, 2.8, 0, 0, Math.PI * 2)
       ctx.fillStyle = '#92400e'
       ctx.fill()
+      ctx.strokeStyle = 'rgba(0,0,0,0.6)'
+      ctx.lineWidth = 1
+      ctx.stroke()
     }
 
     if (frames.length === 0) {
@@ -96,7 +101,7 @@ export function FieldCanvas({ frames, offenseTeam, defenseTeam, playing, onCompl
     completedRef.current = false
     const startTime = performance.now()
     function step(now: number) {
-      const elapsedSec = (now - startTime) / 1000
+      const elapsedSec = ((now - startTime) / 1000) * PLAYBACK_SPEED
       const index = Math.min(frames.length - 1, Math.round(elapsedSec / FRAME_DT))
       drawFrame(frames[index])
       if (index >= frames.length - 1) {
