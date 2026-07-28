@@ -32,6 +32,8 @@ export interface PlayFrame {
 }
 
 export const DT = 1 / 30
+/** Sub-divides each recorded tick into smaller Matter.js integration steps for collision stability. */
+const PHYSICS_SUBSTEPS = 6
 const HALF_WIDTH = FIELD_WIDTH_YD / 2 - 0.6
 
 function clampToField(v: Vec2): Vec2 {
@@ -209,7 +211,37 @@ export function simulatePlay({ outcome, offensePlay, defensePlay, offense, defen
       Matter.Body.setVelocity(body, nextVel)
     }
 
-    Matter.Engine.update(engine, DT * 1000)
+    // Matter's collision solver gets unstable above ~16.7ms steps (it warns about this) — with 22
+    // bodies frequently steering directly at each other's positions (blocking, pursuit), a single
+    // 33ms step let overlaps get deep enough that separation corrections could fling a body several
+    // yards in one tick. Substepping keeps each individual integration well under that threshold, and
+    // clamping displacement after *every* substep (not just once per recorded tick) stops a bad
+    // correction from compounding across substeps before we ever get a chance to rein it in — many
+    // bodies are deliberately steered toward the same point (a tackle, a block, a double-team), which
+    // is an inherently degenerate case for a simple collision solver, so deep multi-body overlaps can
+    // still produce a much bigger separating shove than a single substep should physically allow.
+    const substepMs = (DT * 1000) / PHYSICS_SUBSTEPS
+    for (let sub = 0; sub < PHYSICS_SUBSTEPS; sub++) {
+      const beforeSubstep = new Map<string, Vec2>()
+      for (const actor of allActors) {
+        const body = bodies.get(actor.id)!
+        beforeSubstep.set(actor.id, { x: body.position.x, y: body.position.y })
+      }
+
+      Matter.Engine.update(engine, substepMs)
+
+      for (const actor of allActors) {
+        const body = bodies.get(actor.id)!
+        const prev = beforeSubstep.get(actor.id)!
+        const moved = { x: body.position.x - prev.x, y: body.position.y - prev.y }
+        const movedDist = Math.hypot(moved.x, moved.y)
+        const maxDist = actorMaxSpeed(actor) * (substepMs / 1000) * 2
+        if (movedDist > maxDist && movedDist > 1e-6) {
+          const scale = maxDist / movedDist
+          Matter.Body.setPosition(body, { x: prev.x + moved.x * scale, y: prev.y + moved.y * scale })
+        }
+      }
+    }
 
     for (const body of bodies.values()) {
       const clamped = clampToField({ x: body.position.x, y: body.position.y })
@@ -268,7 +300,11 @@ function snapFinalPosition(
   target: Actor | undefined,
 ): void {
   if (frames.length === 0) return
-  const carrierId = isRun ? rb?.id : outcome.type === 'interception' ? undefined : target?.id
+  // Incomplete passes always resolve to 0 yards, but that's not a "final resting spot" the receiver's
+  // route should be dragged back to — a deep incompletion should still look like it fell incomplete
+  // deep downfield, not get yanked back to the line of scrimmage in the last few frames.
+  const needsExactSpot = outcome.type !== 'interception' && outcome.type !== 'incomplete'
+  const carrierId = isRun ? rb?.id : needsExactSpot ? target?.id : undefined
   if (!carrierId) return
   const exact: Vec2 = { x: frames[frames.length - 1].players[carrierId]?.x ?? 0, y: outcome.yards }
   const blendFrames = Math.min(9, frames.length)

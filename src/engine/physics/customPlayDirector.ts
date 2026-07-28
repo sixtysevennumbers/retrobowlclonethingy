@@ -13,6 +13,7 @@ import {
   frontSevenOf,
   olineOf,
   secondaryOf,
+  standoffTarget,
   type TargetFn,
 } from './playHelpers'
 
@@ -114,11 +115,19 @@ export function setupCustomDefensePlay(
     if (!defender) continue
 
     if (assignment.kind === 'rush' && qb) {
-      targets.set(defender.id, (_t, positions) => positions.get(qb.id) ?? defender.start)
+      targets.set(defender.id, (_t, positions) => {
+        const qbPos = positions.get(qb.id) ?? defender.start
+        const selfPos = positions.get(defender.id) ?? defender.start
+        return standoffTarget(selfPos, qbPos)
+      })
     } else if (assignment.kind === 'cover' && assignment.coverSlot) {
       const coveredActor = bySlotOffense.get(assignment.coverSlot)
       if (coveredActor) {
-        targets.set(defender.id, (_t, positions) => positions.get(coveredActor.id) ?? defender.start)
+        targets.set(defender.id, (_t, positions) => {
+          const coveredPos = positions.get(coveredActor.id) ?? defender.start
+          const selfPos = positions.get(defender.id) ?? defender.start
+          return standoffTarget(selfPos, coveredPos)
+        })
       }
     } else if (assignment.kind === 'zone' && assignment.points.length > 0) {
       const path = assignment.points
